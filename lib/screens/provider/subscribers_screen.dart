@@ -4,6 +4,7 @@ import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../core/theme.dart';
 import '../../models/plan.dart';
 import '../../widgets/bottom_nav.dart';
+import 'package:pay_cycle/core/api_client.dart';
 
 class SubscribersScreen extends StatefulWidget {
   final Plan? plan;
@@ -16,8 +17,19 @@ class SubscribersScreen extends StatefulWidget {
 class _SubscribersScreenState extends State<SubscribersScreen> {
   SubscriberStatus? _filter; // null = all
   bool _loading = true;
+  String? _error;
   List<Subscriber> _all = [];
 
+  // Maps subscriber id -> plan name, so each row can show which plan
+  // they belong to. Populated differently depending on mode:
+  //  - single-plan mode: every subscriber maps to widget.plan!.name
+  //  - all-subscribers mode: filled in per-plan while aggregating
+  final Map<String, String> _planNameById = {};
+
+  // NOTE: the backend's /plans/{id}/subscriptions endpoint doesn't return
+  // collected/outstanding totals (that data doesn't exist anywhere yet —
+  // it would need to come from a join against Transaction amounts).
+  // Left at 0 rather than faking numbers; ask backend to add if needed.
   double _collected = 0;
   double _outstanding = 0;
 
@@ -28,52 +40,121 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
   }
 
   Future<void> _loadSubscribers() async {
-    // TODO: replace with ApiClient.get('/plans/${widget.plan?.id}/subscribers')
-    await Future.delayed(const Duration(milliseconds: 500));
+    final planId = widget.plan?.id;
 
     setState(() {
-      _collected = 180000;
-      _outstanding = 30000;
-      _all = const [
-        Subscriber(
-          id: 's1',
-          name: 'Amara Eze',
-          email: 'amara@example.com',
-          status: SubscriberStatus.failed,
-          lastPaidDate: 'Jun 1',
-          failureReason: 'Card declined',
-        ),
-        Subscriber(
-          id: 's2',
-          name: 'Temi Adeyemi',
-          email: 'temi@example.com',
-          status: SubscriberStatus.overdue,
-          lastPaidDate: 'May 1',
-        ),
-        Subscriber(
-          id: 's3',
-          name: 'Chidi Obi',
-          email: 'chidi@example.com',
-          status: SubscriberStatus.active,
-          lastPaidDate: 'Jun 1',
-        ),
-        Subscriber(
-          id: 's4',
-          name: 'Ngozi Kalu',
-          email: 'ngozi@example.com',
-          status: SubscriberStatus.active,
-          lastPaidDate: 'Jun 1',
-        ),
-        Subscriber(
-          id: 's5',
-          name: 'Babatunde Ige',
-          email: 'babs@example.com',
-          status: SubscriberStatus.active,
-          lastPaidDate: 'Jun 1',
-        ),
-      ];
-      _loading = false;
+      _loading = true;
+      _error = null;
     });
+
+    if (planId != null) {
+      // Single-plan mode: just this plan's subscribers.
+      try {
+        final raw = await ApiClient.getList('/plans/$planId/subscriptions');
+        _planNameById.clear();
+        _all = raw.map((e) {
+          final sub = _subscriberFromApi(e as Map<String, dynamic>);
+          _planNameById[sub.id] = widget.plan!.name;
+          return sub;
+        }).toList();
+        setState(() => _loading = false);
+      } catch (e) {
+        debugPrint('Subscribers load failed: $e');
+        setState(() {
+          _loading = false;
+          _error = 'Could not load subscribers. Pull down to retry.';
+        });
+      }
+      return;
+    }
+
+    // All-subscribers mode: fetch every plan, then fetch each plan's
+    // subscribers in parallel and merge, tagging each with its plan name.
+    try {
+      final plansRaw = await ApiClient.getPlans();
+      final plans = plansRaw.map((e) => e as Map<String, dynamic>).toList();
+
+      final results = await Future.wait(plans.map((p) async {
+        final id = p['id'].toString();
+        final name = p['name'] as String? ?? 'Unknown plan';
+        try {
+          final raw = await ApiClient.getList('/plans/$id/subscriptions');
+          return raw
+              .map((e) => MapEntry(
+                    _subscriberFromApi(e as Map<String, dynamic>),
+                    name,
+                  ))
+              .toList();
+        } catch (e) {
+          debugPrint('Subscriptions for plan $id failed: $e');
+          return <MapEntry<Subscriber, String>>[];
+        }
+      }));
+
+      _planNameById.clear();
+      _all = [];
+      for (final planResults in results) {
+        for (final entry in planResults) {
+          _all.add(entry.key);
+          _planNameById[entry.key.id] = entry.value;
+        }
+      }
+      setState(() => _loading = false);
+    } catch (e) {
+      debugPrint('All-subscribers load failed: $e');
+      setState(() {
+        _loading = false;
+        _error = 'Could not load subscribers. Pull down to retry.';
+      });
+    }
+  }
+
+  /// Maps the backend's SubscriberOut shape onto the app's Subscriber model.
+  ///
+  /// Backend status enum is pending|active|paused|cancelled|past_due, but
+  /// the app model only knows active|failed|overdue. There's currently no
+  /// "failed" signal available here (that lives on Transaction.failure_reason,
+  /// which this endpoint doesn't join in) — so failed subscribers will show
+  /// as active until the backend exposes that. past_due maps to overdue.
+  Subscriber _subscriberFromApi(Map<String, dynamic> json) {
+    final customer = json['customer'] as Map<String, dynamic>;
+    final rawStatus = json['status'] as String?;
+
+    SubscriberStatus status;
+    switch (rawStatus) {
+      case 'past_due':
+        status = SubscriberStatus.overdue;
+        break;
+      case 'active':
+      case 'pending':
+      case 'paused':
+      case 'cancelled':
+      default:
+        status = SubscriberStatus.active;
+    }
+
+    final nextBilling = json['next_billing_date'] as String?;
+
+    return Subscriber(
+      id: json['id'].toString(),
+      name: customer['name'] as String? ?? 'Unknown',
+      email: (customer['email'] as String?) ?? '',
+      status: status,
+      // Backend has no "last paid" date, only next_billing_date — shown
+      // here as a stand-in until the backend adds real payment history.
+      lastPaidDate: nextBilling != null ? _formatDate(nextBilling) : null,
+      failureReason: null,
+    );
+  }
+
+  String _formatDate(String iso) {
+    final dt = DateTime.tryParse(iso);
+    if (dt == null) return iso;
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    return '${months[dt.month - 1]} ${dt.day}';
   }
 
   List<Subscriber> get _filtered =>
@@ -83,17 +164,30 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
       _all.where((sub) => sub.status == s).length;
 
   Future<void> _retryCharge(Subscriber sub) async {
-    // TODO: POST /charge/:subscriber_id
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Retrying charge for ${sub.name}…'),
-        backgroundColor: kNavy,
-      ),
-    );
+    try {
+      await ApiClient.retryCharge(sub.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Retrying charge for ${sub.name}…'),
+          backgroundColor: kNavy,
+        ),
+      );
+      _loadSubscribers();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not retry charge for ${sub.name}'),
+          backgroundColor: kFailText,
+        ),
+      );
+    }
   }
 
   Future<void> _sendLink(Subscriber sub) async {
-    // TODO: trigger WhatsApp deep link or Termii SMS via backend
+    // TODO: no backend endpoint yet for triggering WhatsApp/SMS payment
+    // link delivery — wire this up once that route exists.
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Payment link sent to ${sub.name}'),
@@ -116,23 +210,35 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
             Expanded(
               child: _loading
                   ? const Center(
-                      child: CircularProgressIndicator(color: kEmerald))
+                      child: CircularProgressIndicator(color: kEmerald),
+                    )
                   : RefreshIndicator(
                       onRefresh: _loadSubscribers,
                       color: kEmerald,
                       child: ListView(
                         padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
                         children: [
+                          if (_error != null) ...[
+                            _ErrorBanner(
+                              message: _error!,
+                              onRetry: _loadSubscribers,
+                            ),
+                            const SizedBox(height: 12),
+                          ],
                           _buildSummaryRow(),
                           const SizedBox(height: 12),
-                          ..._filtered.map((s) => Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: _SubscriberRow(
-                                  subscriber: s,
-                                  onRetry: () => _retryCharge(s),
-                                  onSendLink: () => _sendLink(s),
-                                ),
-                              )),
+                          ..._filtered.map(
+                            (s) => Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: _SubscriberRow(
+                                subscriber: s,
+                                planName:
+                                    widget.plan == null ? _planNameById[s.id] : null,
+                                onRetry: () => _retryCharge(s),
+                                onSendLink: () => _sendLink(s),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -161,9 +267,10 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
                 Text(
                   plan?.name ?? 'All subscribers',
                   style: const TextStyle(
-                      color: kWhite,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500),
+                    color: kWhite,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 if (plan != null)
                   Text(
@@ -177,8 +284,10 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
             GestureDetector(
               onTap: () => _showShareSheet(plan),
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: kEmerald,
                   borderRadius: BorderRadius.circular(8),
@@ -187,11 +296,14 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
                   children: [
                     Icon(Icons.link, color: kWhite, size: 14),
                     SizedBox(width: 4),
-                    Text('Share link',
-                        style: TextStyle(
-                            color: kWhite,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500)),
+                    Text(
+                      'Share link',
+                      style: TextStyle(
+                        color: kWhite,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -264,14 +376,17 @@ class _SubscribersScreenState extends State<SubscribersScreen> {
   String _formatNum(double n) => n
       .toStringAsFixed(0)
       .replaceAllMapped(
-          RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
+        RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+        (m) => '${m[1]},',
+      );
 
   void _showShareSheet(Plan plan) {
     showModalBottomSheet(
       context: context,
       backgroundColor: kWhite,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
       builder: (_) => _ShareSheet(plan: plan),
     );
   }
@@ -313,15 +428,18 @@ class _FilterPill extends StatelessWidget {
           color: bg,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isFail && !isActive
-                ? const Color(0xFFF09595)
-                : kBorderC,
+            color: isFail && !isActive ? const Color(0xFFF09595) : kBorderC,
             width: 0.5,
           ),
         ),
-        child: Text(label,
-            style: TextStyle(
-                color: text, fontSize: 12, fontWeight: FontWeight.w500)),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: text,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
       ),
     );
   }
@@ -331,10 +449,11 @@ class _MiniStat extends StatelessWidget {
   final String label;
   final String value;
   final Color valueColor;
-  const _MiniStat(
-      {required this.label,
-      required this.value,
-      required this.valueColor});
+  const _MiniStat({
+    required this.label,
+    required this.value,
+    required this.valueColor,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -348,14 +467,16 @@ class _MiniStat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label,
-              style: const TextStyle(color: kSubText, fontSize: 11)),
+          Text(label, style: const TextStyle(color: kSubText, fontSize: 11)),
           const SizedBox(height: 4),
-          Text(value,
-              style: TextStyle(
-                  color: valueColor,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500)),
+          Text(
+            value,
+            style: TextStyle(
+              color: valueColor,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );
@@ -364,10 +485,12 @@ class _MiniStat extends StatelessWidget {
 
 class _SubscriberRow extends StatelessWidget {
   final Subscriber subscriber;
+  final String? planName;
   final VoidCallback onRetry;
   final VoidCallback onSendLink;
   const _SubscriberRow({
     required this.subscriber,
+    this.planName,
     required this.onRetry,
     required this.onSendLink,
   });
@@ -377,7 +500,6 @@ class _SubscriberRow extends StatelessWidget {
     final s = subscriber;
     final isFailed = s.status == SubscriberStatus.failed;
     final isOverdue = s.status == SubscriberStatus.overdue;
-    final isActive = s.status == SubscriberStatus.active;
     final showActions = isFailed || isOverdue;
 
     Color borderColor = kBorderC;
@@ -407,21 +529,34 @@ class _SubscriberRow extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(s.name,
-                        style: const TextStyle(
-                            color: kNavy,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500)),
+                    Text(
+                      s.name,
+                      style: const TextStyle(
+                        color: kNavy,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                     const SizedBox(height: 2),
                     Text(
                       isFailed
-                          ? 'Last attempted ${s.lastPaidDate} · ${s.failureReason ?? 'Failed'}'
+                          ? 'Last attempted ${s.lastPaidDate ?? '—'} · ${s.failureReason ?? 'Failed'}'
                           : isOverdue
-                              ? 'Last paid ${s.lastPaidDate} · Payment due'
-                              : 'Paid ${s.lastPaidDate}',
-                      style:
-                          const TextStyle(color: kSubText, fontSize: 11),
+                          ? 'Next billing ${s.lastPaidDate ?? '—'} · Payment due'
+                          : 'Next billing ${s.lastPaidDate ?? '—'}',
+                      style: const TextStyle(color: kSubText, fontSize: 11),
                     ),
+                    if (planName != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        planName!,
+                        style: const TextStyle(
+                          color: kEmeraldDk,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -484,9 +619,14 @@ class _Avatar extends StatelessWidget {
     return CircleAvatar(
       radius: 18,
       backgroundColor: bg,
-      child: Text(initials,
-          style: TextStyle(
-              color: text, fontSize: 12, fontWeight: FontWeight.w500)),
+      child: Text(
+        initials,
+        style: TextStyle(
+          color: text,
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
     );
   }
 }
@@ -520,17 +660,22 @@ class _StatusChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-          color: bg, borderRadius: BorderRadius.circular(20)),
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, color: text, size: 12),
           const SizedBox(width: 4),
-          Text(status.label,
-              style: TextStyle(
-                  color: text,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500)),
+          Text(
+            status.label,
+            style: TextStyle(
+              color: text,
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ],
       ),
     );
@@ -586,13 +731,62 @@ class _ActionBtn extends StatelessWidget {
               child: icon,
             ),
             const SizedBox(width: 5),
-            Text(label,
-                style: TextStyle(
-                    color: text,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500)),
+            Text(
+              label,
+              style: TextStyle(
+                color: text,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _ErrorBanner({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: kFailBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFF09595), width: 0.5),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.wifi_off, color: kFailText, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(
+                color: kFailText,
+                fontSize: 12,
+                height: 1.5,
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: onRetry,
+            child: const Text(
+              'Retry',
+              style: TextStyle(
+                color: kFailText,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -621,14 +815,19 @@ class _ShareSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          const Text('Share payment link',
-              style: TextStyle(
-                  color: kNavy,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500)),
+          const Text(
+            'Share payment link',
+            style: TextStyle(
+              color: kNavy,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
           const SizedBox(height: 4),
-          Text('Send this link once. Subscribers pay and get charged automatically.',
-              style: const TextStyle(color: kSubText, fontSize: 13)),
+          const Text(
+            'Send this link once. Subscribers pay and get charged automatically.',
+            style: TextStyle(color: kSubText, fontSize: 13),
+          ),
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -648,14 +847,16 @@ class _ShareSheet extends StatelessWidget {
                 ),
                 GestureDetector(
                   onTap: () {
-                    Clipboard.setData(
-                        ClipboardData(text: plan.paymentLink));
+                    Clipboard.setData(ClipboardData(text: plan.paymentLink));
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Link copied')),
                     );
                   },
-                  child: const Icon(Icons.copy_outlined,
-                      color: kEmeraldDk, size: 18),
+                  child: const Icon(
+                    Icons.copy_outlined,
+                    color: kEmeraldDk,
+                    size: 18,
+                  ),
                 ),
               ],
             ),
@@ -665,8 +866,11 @@ class _ShareSheet extends StatelessWidget {
             children: [
               Expanded(
                 child: _ShareOption(
-                  icon: const FaIcon(FontAwesomeIcons.whatsapp,
-                      color: Color(0xFF25D366), size: 24),
+                  icon: const FaIcon(
+                    FontAwesomeIcons.whatsapp,
+                    color: Color(0xFF25D366),
+                    size: 24,
+                  ),
                   label: 'WhatsApp',
                   color: const Color(0xFF25D366),
                   onTap: () {
@@ -690,7 +894,11 @@ class _ShareSheet extends StatelessWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: _ShareOption(
-                  icon: const Icon(Icons.share_outlined, color: kSubText, size: 24),
+                  icon: const Icon(
+                    Icons.share_outlined,
+                    color: kSubText,
+                    size: 24,
+                  ),
                   label: 'More',
                   color: kSubText,
                   onTap: () {
@@ -713,11 +921,12 @@ class _ShareOption extends StatelessWidget {
   final String label;
   final Color color;
   final VoidCallback onTap;
-  const _ShareOption(
-      {required this.icon,
-      required this.label,
-      required this.color,
-      required this.onTap});
+  const _ShareOption({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -735,8 +944,7 @@ class _ShareOption extends StatelessWidget {
             child: Center(child: icon),
           ),
           const SizedBox(height: 6),
-          Text(label,
-              style: const TextStyle(color: kSubText, fontSize: 12)),
+          Text(label, style: const TextStyle(color: kSubText, fontSize: 12)),
         ],
       ),
     );

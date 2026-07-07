@@ -43,6 +43,7 @@ dependencies:
   http: 1.6.0
   lottie: 3.3.1
   posix: 6.5.0
+  flutter_secure_storage_web: ^1.0.0
   
   
 
@@ -56,6 +57,13 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
+
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/icon.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -75,6 +83,7 @@ flutter:
     - assets/animations/analytics.json
     - assets/animations/Share.json
     - assets/animations/links.json
+    - assets/icons/icon.png
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see

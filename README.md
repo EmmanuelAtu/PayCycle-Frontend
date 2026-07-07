@@ -170,6 +170,8 @@ flutter:
     - assets/animations/finance.lottie
     - assets/animations/link.lottie
     - assets/animations/analytics.lottie
+    - assets/animations/Share.json
+    - assets/animations/links.json
 ```
 
 ### Dashboard
@@ -291,9 +293,9 @@ These items are marked `// PLACEHOLDER` in the code and need to be completed bef
 | Role | Name |
 |---|---|
 | Flutter Developer | Ezeugbana Prince Franklyn |
-| Backend Developer | Emmanuel |
-| Backend Developer | Irom |
+| Backend Developer | Atu Emmanuel Agbor|
+| Backend Developer | Irom Jude Achina|
 
 ---
 
-*Built for the Calabar Tech Hackathon — PayCycle, June 2025.*
+*Built for the Tech Hackathon — PayCycle, June 2025.*

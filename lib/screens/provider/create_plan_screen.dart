@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../core/theme.dart';
-import '../../models/plan.dart';
 import '../../core/api_client.dart';
+import '../../models/plan.dart';
 
 class CreatePlanScreen extends StatefulWidget {
   const CreatePlanScreen({super.key});
@@ -58,32 +57,54 @@ class _CreatePlanScreenState extends State<CreatePlanScreen> {
   }
 
   Future<void> _savePlan({bool shareAfter = true}) async {
-  if (!_formKey.currentState!.validate()) return;
-  setState(() => _loading = true);
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _loading = true);
 
-  try {
-    final result = await ApiClient.createPlan(
-      name: _nameCtrl.text,
-      amount: int.parse(_amountCtrl.text),
-      cycle: _cycle.name,
-      billingDay: _billingDay,
-    );
+    try {
+      final amount = int.parse(_amountCtrl.text.trim()); // plain Naira
 
-    if (!mounted) return;
-    setState(() {
-      _loading = false;
-      _generatedLink = result['payment_link'] as String? ?? '';
-    });
+      final data = await ApiClient.createPlan(
+        name: _nameCtrl.text.trim(),
+        amount: amount,
+        cycle: _cycle.name, // 'daily' | 'weekly' | 'monthly' | 'quarterly'
+        billingDay: (_cycle == BillingCycle.monthly ||
+                _cycle == BillingCycle.quarterly)
+            ? _billingDay
+            : null,
+      );
 
-    if (shareAfter) _showShareSheet();
-  } catch (e) {
-    if (!mounted) return;
-    setState(() => _loading = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Could not create plan: $e')),
-    );
+      // Backend returns join_token — construct the shareable URL from it
+      final joinToken = data['join_token'] as String?;
+      if (joinToken == null || joinToken.isEmpty) {
+        throw Exception('No join token returned from server');
+      }
+
+      // Base URL where pay.html is served — update before going to production
+      final webBase = ApiClient.webBaseUrl;
+      final link = '$webBase/join/$joinToken';
+
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _generatedLink = link;
+      });
+
+      if (shareAfter) _showShareSheet();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.toString().contains('join token')
+                ? 'Plan saved but share link unavailable. Try again.'
+                : 'Could not create plan. Check your connection and try again.',
+          ),
+          backgroundColor: kFailText,
+        ),
+      );
+    }
   }
-}
 
   void _showShareSheet() {
     if (_generatedLink == null) return;
@@ -463,7 +484,7 @@ class _ShareSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 20),
+          20, 16, 20, MediaQuery.of(context).viewInsets.bottom + 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -477,93 +498,106 @@ class _ShareSheet extends StatelessWidget {
                   borderRadius: BorderRadius.circular(2)),
             ),
           ),
-          const SizedBox(height: 16),
-          const Text('Plan created',
-              style: TextStyle(
-                  color: kNavy,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500)),
-          const SizedBox(height: 4),
-          const Text(
-            'Share this link once with each subscriber. They pay once and get charged automatically every cycle.',
-            style: TextStyle(color: kSubText, fontSize: 13, height: 1.5),
-          ),
-          const SizedBox(height: 16),
-          _LinkRow(link: link),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
+
+          // Header
           Row(
             children: [
-              Expanded(
-                child: _ShareBtn(
-                  icon: const FaIcon(FontAwesomeIcons.whatsapp,
-                      color: Color(0xFF25D366), size: 24),
-                  label: 'WhatsApp',
-                  color: const Color(0xFF25D366),
-                  onTap: () {
-                    // TODO: Uri.launch whatsapp://send?text=link
-                    Navigator.pop(context);
-                  },
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: kEmeraldLt,
+                  borderRadius: BorderRadius.circular(8),
                 ),
+                child: const Icon(Icons.check_circle_outline,
+                    color: kEmeraldDk, size: 20),
               ),
               const SizedBox(width: 10),
-              Expanded(
-                child: _ShareBtn(
-                  icon: const Icon(Icons.sms_outlined, color: kNavy, size: 24),
-                  label: 'SMS',
-                  color: kNavy,
-                  onTap: () {
-                    Navigator.pop(context);
-                  },
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _ShareBtn(
-                  icon: const Icon(Icons.share_outlined, color: kSubText, size: 24),
-                  label: 'More',
-                  color: kSubText,
-                  onTap: () {
-                    Navigator.pop(context);
-                  },
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Plan created successfully',
+                        style: TextStyle(
+                            color: kNavy,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500)),
+                    SizedBox(height: 2),
+                    Text('Your payment link is ready to share',
+                        style: TextStyle(color: kSubText, fontSize: 12)),
+                  ],
                 ),
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-}
+          const SizedBox(height: 20),
 
-class _ShareBtn extends StatelessWidget {
-  final Widget icon;
-  final String label;
-  final Color color;
-  final VoidCallback onTap;
-  const _ShareBtn(
-      {required this.icon,
-      required this.label,
-      required this.color,
-      required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
+          // Instruction box
           Container(
-            width: 48,
-            height: 48,
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
+              color: kEmeraldLt,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                  color: kEmerald.withOpacity(0.3), width: 0.5),
             ),
-            child: Center(child: icon),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, color: kEmeraldDk, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Copy the link below and share it with anyone you would like to subscribe to this plan. Each subscriber only needs to receive the link once — their card will be saved and charged automatically every cycle.',
+                    style: TextStyle(
+                        color: kEmeraldDk, fontSize: 12, height: 1.6),
+                  ),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 6),
-          Text(label,
-              style: const TextStyle(color: kSubText, fontSize: 12)),
+          const SizedBox(height: 16),
+
+          // Link row
+          _LinkRow(link: link),
+          const SizedBox(height: 8),
+
+          // Copy CTA
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: link));
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Payment link copied to clipboard'),
+                    backgroundColor: kEmeraldDk,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.copy_outlined, size: 16),
+              label: const Text('Copy link'),
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // Done button
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: () => Navigator.pop(context),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: kNavy,
+                side: const BorderSide(color: kBorderC, width: 0.5),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('Done'),
+            ),
+          ),
         ],
       ),
     );

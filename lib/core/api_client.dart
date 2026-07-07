@@ -13,7 +13,14 @@ class ApiClient {
 
   static const _baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://chaos-nimble-lance.ngrok-free.dev',
+    defaultValue: 'https://paycycle-backend-1.onrender.com',
+  );
+
+  /// Base URL for the subscriber payment page (pay.html).
+  /// Update this when the frontend is hosted on a real domain.
+  static const webBaseUrl = String.fromEnvironment(
+    'WEB_BASE_URL',
+    defaultValue: 'https://paycycle-backend-1.onrender.com',
   );
 
   static final _storage = const FlutterSecureStorage();
@@ -133,12 +140,15 @@ class ApiClient {
     required String password,
     required String phoneNumber,
   }) async {
-    final data = await post('/auth/signup', body: {
-      'name': name,
-      'email': email,
-      'password': password,
-      'phone_number': phoneNumber,
-    });
+    final data = await post(
+      '/auth/signup',
+      body: {
+        'name': name,
+        'email': email,
+        'password': password,
+        'phone_number': phoneNumber,
+      },
+    );
 
     // Save name from the form — backend doesn't return a token here yet
     await saveName(name);
@@ -164,13 +174,15 @@ class ApiClient {
     required int amount,
     required String cycle, // 'daily' | 'weekly' | 'monthly' | 'quarterly'
     int? billingDay,
-  }) =>
-      post('/plans', body: {
-        'name': name,
-        'amount': amount,
-        'billing_frequency': cycle,
-        if (billingDay != null) 'billing_day': billingDay,
-      });
+  }) => post(
+    '/plans',
+    body: {
+      'name': name,
+      'amount': amount,
+      'billing_frequency': cycle,
+      if (billingDay != null) 'billing_day': billingDay,
+    },
+  );
 
   // ── Subscribers ───────────────────────────────────────────────
   /// GET /plans/:planId/subscribers → { subscribers[], collected, outstanding }
@@ -185,8 +197,7 @@ class ApiClient {
   static Future<Map<String, dynamic>> updateSubscriberStatus(
     String subscriberId, {
     required String status,
-  }) =>
-      patch('/subscribers/$subscriberId/status', body: {'status': status});
+  }) => patch('/subscribers/$subscriberId/status', body: {'status': status});
 
   // ── My subscriptions ──────────────────────────────────────────
   /// GET /pay/:token → { plan_name, amount, cycle, provider_name }
@@ -196,4 +207,41 @@ class ApiClient {
   /// GET /my-subscriptions → { subscriptions[] }
   static Future<Map<String, dynamic>> getMySubscriptions() =>
       get('/my-subscriptions');
+
+  // ── Wallet ────────────────────────────────────────────────────
+  /// GET /wallet → { id, balance }  (balance is in kobo)
+  /// NOTE: backend doesn't return total_earned/pending_clearance —
+  /// those are derived client-side from the ledger in wallet_screen.dart.
+  static Future<Map<String, dynamic>> getWallet() => get('/wallet/wallet');
+
+  /// GET /wallet/wallet/ledger → [ { id, amount, type, reference, description, created_at }, ... ]
+  /// Bare JSON array (confirmed against backend route), amount in kobo.
+  static Future<List<dynamic>> getWalletLedger() =>
+      getList('/wallet/wallet/ledger');
+
+  /// POST /wallet/verify-account → { account_name }
+  static Future<Map<String, dynamic>> verifyAccount({
+    required String accountNumber,
+    required String bankName,
+  }) => post(
+    '/wallet/verify-account',
+    body: {'account_number': accountNumber, 'bank_name': bankName},
+  );
+
+  /// POST /wallet/withdraw → { success, reference }
+  /// Amount must be in kobo (multiply Naira × 100 before calling)
+  static Future<Map<String, dynamic>> withdraw({
+    required int amountKobo,
+    required String bankName,
+    required String accountNumber,
+    required String accountName,
+  }) => post(
+    '/wallet/withdraw',
+    body: {
+      'amount': amountKobo,
+      'bank_name': bankName,
+      'account_number': accountNumber,
+      'account_name': accountName,
+    },
+  );
 }

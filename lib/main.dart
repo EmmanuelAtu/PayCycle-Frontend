@@ -11,6 +11,7 @@ import 'screens/provider/subscribers_screen.dart';
 import 'screens/provider/create_plan_screen.dart';
 import 'screens/subscriptions/pay_screen.dart';
 import 'screens/subscriptions/my_subscriptions_screen.dart';
+import 'screens/wallet/wallet_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -91,6 +92,12 @@ final _router = GoRouter(
     GoRoute(
       path: '/my-subscriptions',
       builder: (_, __) => const MySubscriptionsScreen(),
+    ),
+
+    // Wallet tab
+    GoRoute(
+      path: '/wallet',
+      builder: (_, __) => const WalletScreen(),
     ),
   ],
 );

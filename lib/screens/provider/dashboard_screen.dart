@@ -75,19 +75,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       // 1. Fetch Plans
       final plansJson = await ApiClient.getPlans();
+      final webBase = ApiClient.webBaseUrl;
+
       final plans = plansJson.map((raw) {
         final p = raw as Map<String, dynamic>;
+        final joinToken = p['join_token'] as String? ?? '';
         return Plan(
           id: p['id'].toString(),
           name: p['name'] as String? ?? '',
-          amount: (p['amount'] as num?)?.toDouble() ?? 0,
+          amount: (p['amount'] as num?)?.toDouble() ?? 0, // plain Naira
           cycle: _cycleFromString(
               (p['billing_frequency'] ?? p['cycle']) as String?),
           billingDay: (p['billing_day'] as num?)?.toInt(),
           activeCount: (p['active_count'] as num?)?.toInt() ?? 0,
           failedCount: (p['failed_count'] as num?)?.toInt() ?? 0,
           overdueCount: (p['overdue_count'] as num?)?.toInt() ?? 0,
-          paymentLink: p['payment_link'] as String? ?? '',
+          // Construct the join URL from the token the backend returns
+          paymentLink: joinToken.isNotEmpty
+              ? '$webBase/join/$joinToken'
+              : p['payment_link'] as String? ?? '',
         );
       }).toList();
 
